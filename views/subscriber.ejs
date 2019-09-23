@@ -1,0 +1,181 @@
+<html>
+
+<head>
+    <meta charset="UTF-8">
+</head>
+
+<body>
+    <!-- <input id="roomName" type="text" name="roomName" size="30"> -->
+    <button onclick="joinRoom()">join Room</button>
+    <br>
+
+</body>
+
+<script>
+    const MessageType = {
+        offer: 'offer',
+        answer: 'answer',
+        candidate: 'candidate',
+        register: 'register',
+        join: 'join',
+        offer_request: 'offer_request'
+    }
+    console.log('hello eletron');
+    let ws, userId, localStream;
+    const peers = new Map();
+    window.onload = () => {
+        initializeAsync();
+    };
+    const initializeAsync = async () => {
+        ws = setupWs();
+        localStream = await setupLocalStream();
+        if (localStream)
+            setupLocalVideoElement(localStream);
+    };
+
+    const setupLocalVideoElement = (stream) => {
+        const element = document.createElement('video');
+        element.srcObject = stream;
+        element.id = stream.id;
+        element.play();
+        element.width = 900;
+        element.height = 1600;
+        element.muted = true;
+        document.body.appendChild(element);
+    };
+
+    const setupLocalStream = async () => {
+
+        try {
+            let stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            return stream;
+        } catch (e) {
+            console.log("error to setup localstream");
+            return null;
+        }
+    };
+    const joinRoom = async () => {
+        CreateOfferTo("");
+    };
+    const setupWs = () => {
+        const _ws = new WebSocket('ws://localhost:3000');
+        _ws.onopen = () => console.log('ws on open');
+        _ws.onmessage = (ev) => {
+            let message = JSON.parse(ev.data);
+            switch (message.type) {
+                case MessageType.register:
+                    console.log("registerd as", message.userId);
+                    userId = message.userId;
+                    break;
+                case MessageType.offer:
+                    console.log("offer received from:", message.targetId);
+                    console.log(message);
+                    SetOffer(message);
+                    break;
+                case MessageType.offer_request:
+                    console.log("create request to offer to:", message.targetId);
+                    CreateOfferTo(message.targetId);
+                    break;
+                case MessageType.answer:
+                    console.log('answer received');
+                    SetAnswer(message);
+                    break;
+                case MessageType.candidate:
+                    console.log("candidate received");
+                    SetCandidate(message);
+                    break;
+            }
+        };
+        _ws.onclose = () => { };
+        return _ws;
+    };
+    const SetCandidate = async (message) => {
+        if (peers.has(message.targetId)) {
+            const peer = peers.get(message.targetId);
+            peer.addIceCandidate(message.candidate);
+        }
+    };
+    const SetOffer = async (message) => {
+        const peer = createPeerConnection();
+        peer.addStream(localStream);
+        peers.set(message.targetId, peer);
+        try {
+            await peer.setRemoteDescription({ type: message.type, sdp: message.sdp });
+            const answer = await peer.createAnswer();
+            await peer.setLocalDescription(answer);
+            sendSdpTo(message.targetId, answer);
+        } catch (e) {
+            console.log(e);
+        }
+    };
+    const SetAnswer = async (message) => {
+        if (peers.has(message.targetId)) {
+            console.log("set answer async");
+            const peer = peers.get(message.targetId);
+            try {
+                await peer.setRemoteDescription({ type: message.type, sdp: message.sdp });
+            } catch (e) {
+                console.log(e);
+            }
+        }
+    };
+    const CreateOfferTo = async (id) => {
+        console.log("create offer to", id);
+        const peer = createPeerConnection(id);
+        peer.addStream(localStream);
+        peers.set(id, peer);
+        try {
+            let offer = await peer.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+            await peer.setLocalDescription(offer);
+            sendSdpTo(id, offer);
+        } catch (e) {
+            console.log(e);
+        }
+    };
+    const sendSdpTo = (target, sdp) => {
+        const message = JSON.stringify({ type: sdp.type, sdp: sdp.sdp, targetId: target });
+        ws.send(message);
+    };
+    const sendCandidate = (target, candidate) => {
+        const message = JSON.stringify({ type: MessageType.candidate, candidate: candidate, targetId: target });
+        ws.send(message);
+    };
+    const createPeerConnection = (id) => {
+        const peerConnectionConfig = {
+            "iceServers": [{ "urls": "stun:stun.webrtc.ecl.ntt.com:3478" }],
+            bundlePolicy: "max-bundle",
+            rtcpMuxPolicy: "require",
+            sdpSemantics: "plan-b"
+        };
+        const _peer = new RTCPeerConnection(peerConnectionConfig);
+        _peer.onicecandidate = (ev) => {
+            if (ev.candidate)
+                sendCandidate(id, ev.candidate);
+        };
+        _peer.oniceconnectionstatechange = (ev) => {
+            console.log(_peer.iceConnectionState);
+        };
+        _peer.onconnectionstatechange = () => {
+            console.log(_peer.connectionState);
+        }
+        _peer.onAddStream = (ev) => {
+            console.log("id:", id, "stream:", ev);
+        };
+        _peer.ontrack = (ev) => {
+            console.log("on track", ev.streams[0]);
+            console.log(ev.track.kind);
+            const media = document.createElement(ev.track.kind);
+
+            media.srcObject = ev.streams[0];
+            media.width = 900;
+            media.height = 1600;
+            if (ev.track.kind == "video") {
+                media.play();
+            }
+            document.body.appendChild(media);
+        };
+        return _peer;
+    };
+</script>
+
+</html>
